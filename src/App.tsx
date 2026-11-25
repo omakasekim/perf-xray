@@ -3,12 +3,14 @@ import {
   AlertTriangle,
   BarChart3,
   Check,
+  ClipboardPaste,
   Copy,
   Database,
   Download,
   Flame,
   Gauge,
   Sparkles,
+  X,
   Zap,
 } from 'lucide-react';
 import {
@@ -16,8 +18,11 @@ import {
   CI_PRESETS,
   DEMO_BENCHMARKS,
   evaluateBenchmarks,
+  formatBenchmarkPrComment,
+  parseGithubActionsWorkflow,
   parseSqlExplainJson,
   SQL_EXPLAIN_PRESETS,
+  type CiStep,
 } from './core/perfEngine.ts';
 
 type PerfMode = 'ci' | 'sql' | 'bench';
@@ -27,6 +32,9 @@ export function App() {
 
   // Mode A: CI Flamegraph
   const [ciPresetId, setCiPresetId] = useState<string>(CI_PRESETS[0].id);
+  const [customCiSteps, setCustomCiSteps] = useState<CiStep[] | null>(null);
+  const [yamlOpen, setYamlOpen] = useState(false);
+  const [yamlText, setYamlText] = useState('');
   const [applyCiOpt, setApplyCiOpt] = useState(false);
   const [selectedStepId, setSelectedStepId] = useState<string>(CI_PRESETS[0].steps[1].id);
 
@@ -37,9 +45,13 @@ export function App() {
 
   // Mode C: Benchmark Comparator
   const [thresholdPct, setThresholdPct] = useState(10);
+  const [copiedPrComment, setCopiedPrComment] = useState(false);
 
   const ciPreset = CI_PRESETS.find((p) => p.id === ciPresetId) ?? CI_PRESETS[0];
-  const ciAnalysis = useMemo(() => analyzeCiPipeline(ciPreset.steps, applyCiOpt), [ciPreset, applyCiOpt]);
+  const ciAnalysis = useMemo(
+    () => analyzeCiPipeline(customCiSteps ?? ciPreset.steps, applyCiOpt),
+    [ciPreset, customCiSteps, applyCiOpt],
+  );
   const selectedStep = ciAnalysis.steps.find((s) => s.id === selectedStepId) ?? ciAnalysis.steps[0];
 
   const sqlPlan = useMemo(() => {
@@ -208,6 +220,7 @@ export function App() {
                   type="button"
                   onClick={() => {
                     setCiPresetId(p.id);
+                    setCustomCiSteps(null);
                     setApplyCiOpt(false);
                     setSelectedStepId(p.steps[0].id);
                   }}
@@ -232,6 +245,13 @@ export function App() {
                 <Zap className="h-3.5 w-3.5" />
                 <span>{applyCiOpt ? `Optimized (-${ciAnalysis.savedSec}s)` : 'Simulate Cache + Parallel Wins'}</span>
               </button>
+              <button
+                type="button"
+                onClick={() => setYamlOpen((v) => !v)}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-[#111827] px-2.5 py-1 text-slate-200 hover:border-amber-500"
+              >
+                <ClipboardPaste className="h-3.5 w-3.5 text-amber-400" /> Paste Actions YAML
+              </button>
             </div>
 
             <div className="flex gap-3 font-mono text-[11px]">
@@ -240,6 +260,38 @@ export function App() {
               <span className="text-amber-300">Critical path: {ciAnalysis.criticalSec}s</span>
             </div>
           </div>
+
+          {yamlOpen && (
+            <div className="border-b border-slate-800 bg-[#111827] px-4 py-3">
+              <div className="mb-1.5 flex items-center justify-between text-xs">
+                <span className="font-semibold text-amber-300">Paste `.github/workflows/*.yml` to profile stages &amp; cache bottlenecks</span>
+                <button type="button" onClick={() => setYamlOpen(false)} className="text-slate-400"><X className="h-4 w-4" /></button>
+              </div>
+              <textarea
+                value={yamlText}
+                onChange={(e) => setYamlText(e.target.value)}
+                placeholder={'jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm ci\n      - run: npm test\n      - run: npm run build'}
+                className="h-24 w-full rounded-lg border border-slate-700 bg-[#090D16] p-2 font-mono text-xs text-slate-100"
+              />
+              <div className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const parsed = parseGithubActionsWorkflow(yamlText);
+                    if (parsed.length > 0) {
+                      setCustomCiSteps(parsed);
+                      setSelectedStepId(parsed[0].id);
+                      setApplyCiOpt(false);
+                      setYamlOpen(false);
+                    }
+                  }}
+                  className="rounded bg-amber-500 px-3 py-1 text-xs font-semibold text-slate-950"
+                >
+                  Generate Flamegraph
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="grid flex-1 overflow-hidden lg:grid-cols-[1.35fr_0.85fr]">
             {/* Timeline Flamegraph */}
@@ -463,23 +515,50 @@ export function App() {
       {mode === 'bench' && (
         <div className="flex flex-1 flex-col overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 bg-[#0F172A] px-4 py-2 text-xs">
-            <div className="flex items-center gap-2 text-slate-200">
+            <div className="flex flex-wrap items-center gap-2 text-slate-200">
               <Gauge className="h-4 w-4 text-amber-400" />
               <span className="font-semibold">p50 / p95 / p99 Distribution &amp; Throughput Comparator</span>
+              <span
+                className={`rounded px-2 py-0.5 font-mono text-[10px] font-bold ${
+                  benchResults.some((r) => r.regressed)
+                    ? 'bg-rose-500/20 text-rose-300'
+                    : 'bg-emerald-500/20 text-emerald-300'
+                }`}
+              >
+                {benchResults.some((r) => r.regressed)
+                  ? `CI GATE: FAIL (${benchResults.filter((r) => r.regressed).length} regression)`
+                  : 'CI GATE: PASS'}
+              </span>
             </div>
-            <label className="flex items-center gap-2 font-mono text-xs text-slate-300">
-              <span>Regression Gate:</span>
-              <input
-                type="range"
-                min={5}
-                max={30}
-                step={5}
-                value={thresholdPct}
-                onChange={(e) => setThresholdPct(Number(e.target.value))}
-                className="w-28 accent-amber-400"
-              />
-              <span className="text-amber-300">+{thresholdPct}% p99</span>
-            </label>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 font-mono text-xs text-slate-300">
+                <span>Regression Gate:</span>
+                <input
+                  type="range"
+                  min={5}
+                  max={30}
+                  step={5}
+                  value={thresholdPct}
+                  onChange={(e) => setThresholdPct(Number(e.target.value))}
+                  className="w-28 accent-amber-400"
+                />
+                <span className="text-amber-300">+{thresholdPct}% p99</span>
+              </label>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(formatBenchmarkPrComment(DEMO_BENCHMARKS, benchResults, thresholdPct));
+                    setCopiedPrComment(true);
+                    setTimeout(() => setCopiedPrComment(false), 1600);
+                  } catch {}
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-[#111827] px-2.5 py-1 font-mono text-[11px] text-sky-300 hover:border-sky-500"
+              >
+                {copiedPrComment ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                Copy PR Markdown
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 space-y-4 overflow-y-auto p-5">

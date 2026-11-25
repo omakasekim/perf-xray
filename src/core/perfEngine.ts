@@ -304,3 +304,70 @@ export const DEMO_BENCHMARKS: BenchmarkMetric[] = [
   { id: 'b3', name: 'POST /v2/search (Hybrid Rerank)', baseP50: 19.5, baseP95: 48.2, baseP99: 74.0, baseRps: 1280, candP50: 24.8, candP95: 69.5, candP99: 108.4, candRps: 940 },
   { id: 'b4', name: 'WASM Lockfile Graph Parser', baseP50: 8.1, baseP95: 14.5, baseP99: 21.0, baseRps: 2150, candP50: 4.4, candP95: 8.2, candP99: 11.6, candRps: 4120 },
 ];
+
+export function parseGithubActionsWorkflow(yaml: string): CiStep[] {
+  const lines = yaml.replace(/\r\n/g, '\n').split('\n');
+  const steps: CiStep[] = [];
+  let inJobs = false;
+  let currentJob = '';
+  let cursorSec = 0;
+
+  for (const raw of lines) {
+    if (!raw.trim() || raw.trim().startsWith('#')) continue;
+    const indent = raw.search(/\S/);
+    const trimmed = raw.trim();
+    if (indent === 0) {
+      inJobs = trimmed === 'jobs:';
+      continue;
+    }
+    if (!inJobs) continue;
+    if (indent === 2 && trimmed.endsWith(':')) {
+      currentJob = trimmed.slice(0, -1);
+      continue;
+    }
+    if (currentJob && (trimmed.startsWith('- run:') || trimmed.startsWith('- name:') || trimmed.startsWith('- uses:'))) {
+      const label = trimmed.replace(/^-\s*(?:run|name|uses):\s*/, '').replace(/^['"]|['"]$/g, '');
+      const isInstall = /npm ci|npm install|cargo build|pip install|docker build/i.test(label);
+      const isTest = /test|vitest|pytest|playwright|lint|tsc/i.test(label);
+      const dur = isInstall ? 78 : isTest ? 52 : 22;
+      steps.push({
+        id: `gh_${steps.length}`,
+        stage: currentJob,
+        name: label.slice(0, 48),
+        startSec: cursorSec,
+        durationSec: dur,
+        cacheHit: !isInstall,
+        criticalPath: true,
+        parallelizable: isTest,
+        optimizationHint: isInstall
+          ? 'Enable dependency/layer caching for faster cold starts.'
+          : isTest
+            ? 'Candidate for matrix runner sharding.'
+            : undefined,
+      });
+      cursorSec += dur;
+    }
+  }
+  return steps;
+}
+
+export function formatBenchmarkPrComment(
+  items: BenchmarkMetric[],
+  results: BenchmarkComparison[],
+  thresholdPct: number,
+): string {
+  const regCount = results.filter((r) => r.regressed).length;
+  const verdict = regCount > 0 ? `FAIL (${regCount} regression(s) > +${thresholdPct}% p99)` : `PASS (0 regressions > +${thresholdPct}% p99)`;
+  const lines = [
+    `### perf-xray Benchmark Gate: **${verdict}**`,
+    '',
+    '| Benchmark | Base p99 | Cand p99 | Delta | Throughput | Status |',
+    '| :--- | ---: | ---: | ---: | ---: | :---: |',
+    ...items.map((b, i) => {
+      const r = results[i];
+      const status = r.regressed ? 'REGRESSION' : r.improved ? 'FASTER' : 'OK';
+      return `| \`${b.name}\` | ${b.baseP99}ms | ${b.candP99}ms | ${r.p99DeltaPct > 0 ? '+' : ''}${r.p99DeltaPct}% | ${r.rpsSpeedup}x | ${status} |`;
+    }),
+  ];
+  return lines.join('\n') + '\n';
+}

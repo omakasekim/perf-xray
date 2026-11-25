@@ -1,6 +1,6 @@
 # perf-xray
 
-[![Live Demo](https://img.shields.io/badge/Live%20Demo-GitHub%20Pages-f59e0b?style=flat-square)](https://aetherx86.github.io/perf-xray/)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-GitHub%20Pages-f59e0b?style=flat-square)](https://omakasekim.github.io/perf-xray/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981?style=flat-square)](LICENSE)
 
 > **Interactive 3-mode performance workbench:** CI critical-path flamegraph simulator, PostgreSQL `EXPLAIN (ANALYZE, FORMAT JSON)` query plan flow analyzer, and p50/p95/p99 latency benchmark comparator.
